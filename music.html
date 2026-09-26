@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Music Library — A MUSIC</title><link rel="stylesheet" href="/css/style.css"></head>
+<body>
+<nav class="nav"><a class="logo" href="/">🎵 <span class="site-name">A MUSIC</span></a>
+<div class="nav-links"><a href="/">Home</a><a href="/music.html" class="active">Library</a><a href="/player.html">Studio</a><a href="/effects.html">😂 Effects</a></div><span></span></nav>
+<div class="wrap">
+  <h2 class="section-title">🎵 Music Library</h2>
+  <div class="searchbar"><input id="q" placeholder="Search title, artist, tag…"><select id="cat" style="max-width:200px"><option value="">All categories</option></select></div>
+  <div class="grid" id="list"></div>
+</div>
+<div class="mini-player" id="mini"><div class="disc">🎵</div>
+<div style="flex:1"><div id="miniTitle" style="font-weight:800;font-size:14px">Nothing playing</div>
+<div class="progress" id="miniProg"><i id="miniFill" style="width:0%"></i></div></div>
+<button class="icon-btn big" id="miniPlay">▶</button><a class="icon-btn" href="/player.html">🎚️</a></div>
+<audio id="audio" preload="none"></audio>
+<script src="/js/app.js"></script><script src="/js/audio-engine.js"></script>
+<script>
+const audio=$("#audio"); const engine=new AudioEngine(audio); let SONGS=[];
+async function load(){
+  const cats=await api("/api/categories").catch(()=>[]);
+  $("#cat").innerHTML='<option value="">All categories</option>'+cats.map(c=>`<option>${c}</option>`).join("");
+  await refresh();
+  $("#q").oninput=refresh; $("#cat").onchange=refresh;
+}
+async function refresh(){
+  const q=$("#q").value, c=$("#cat").value;
+  SONGS=await api(`/api/songs?search=${encodeURIComponent(q)}&category=${encodeURIComponent(c)}`).catch(()=>[]);
+  $("#list").innerHTML=SONGS.map(s=>`<div class="card" data-id="${s.song_id}"><div class="thumb">${s.category==="Gaming"?"🎮":s.category==="Chill"?"🌙":"🎵"}</div><h3>${s.title}</h3><p>${s.artist||""} • ▶ ${s.play_count||0}</p><span class="pill">${s.category||""}</span></div>`).join("")||"<p style='color:var(--muted)'>No songs found.</p>";
+  $$(".card").forEach(el=>el.onclick=()=>playSong(el.dataset.id));
+}
+async function playSong(id){
+  const s=SONGS.find(x=>x.song_id===id); if(!s)return;
+  window.__currentSong=s.title; $("#miniTitle").textContent="🎵 "+s.title;
+  audio.src=s.audio_url; engine.ensure(); await audio.play().catch(()=>{});
+  $("#miniPlay").textContent="⏸"; heartbeat(s.title);
+  api("/api/songs/"+id+"/play",{method:"POST",body:{session_id:sessionId}}).catch(()=>{});
+  localStorage.setItem("bf_last_song",JSON.stringify(s));
+}
+$("#miniPlay").onclick=()=>{engine.ensure();if(audio.paused){audio.play();$("#miniPlay").textContent="⏸";}else{audio.pause();$("#miniPlay").textContent="▶";}};
+audio.ontimeupdate=()=>{if(audio.duration)$("#miniFill").style.width=(audio.currentTime/audio.duration*100)+"%";};
+load();
+</script></body></html>

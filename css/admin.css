@@ -1,0 +1,27 @@
+:root{--p:#6C4EFF;--bg:#0d0d1d;--card:#171730;--text:#f2f2ff;--mut:#9a9ab5}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);font-family:Inter,system-ui,sans-serif;display:flex;min-height:100vh}
+.side{width:230px;background:#101022;border-right:1px solid rgba(255,255,255,.08);padding:20px;display:flex;flex-direction:column;gap:6px;position:sticky;top:0;height:100vh}
+.side h2{letter-spacing:2px;font-size:18px;margin-bottom:16px}
+.side a{padding:10px 12px;border-radius:10px;color:var(--mut);font-weight:700;font-size:14px;cursor:pointer;display:block}
+.side a.on,.side a:hover{background:rgba(108,78,255,.2);color:var(--text)}
+.main{flex:1;padding:26px;max-width:1100px}
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:14px;margin:16px 0}
+.stat{background:var(--card);border:1px solid rgba(255,255,255,.1);border-radius:14px;padding:16px}
+.stat b{font-size:26px}.stat span{color:var(--mut);font-size:12px}
+table{width:100%;border-collapse:collapse;font-size:13px;margin-top:12px}
+th,td{padding:10px;border-bottom:1px solid rgba(255,255,255,.08);text-align:left}
+th{color:var(--mut)}
+input,select,textarea{background:#0e0e20;border:1px solid rgba(255,255,255,.15);color:var(--text);padding:10px 12px;border-radius:10px;font-size:13px}
+button{background:var(--p);border:0;color:#fff;padding:10px 18px;border-radius:10px;font-weight:800;cursor:pointer}
+button.ghost{background:transparent;border:1px solid rgba(255,255,255,.2)}
+.row{display:flex;gap:10px;flex-wrap:wrap;margin:12px 0}
+.panel{background:var(--card);border:1px solid rgba(255,255,255,.1);border-radius:14px;padding:18px;margin-top:16px}
+.live-dot{width:10px;height:10px;border-radius:50%;background:#ff3b3b;display:inline-block;animation:blink 1s infinite}
+@keyframes blink{50%{opacity:.3}}
+.bar{height:120px;display:flex;align-items:flex-end;gap:6px;margin-top:12px}
+.bar i{flex:1;background:linear-gradient(180deg,var(--p),#00E5FF);border-radius:6px 6px 0 0;min-height:4px}
+.login-wrap{margin:auto;background:var(--card);padding:36px;border-radius:18px;border:1px solid rgba(255,255,255,.12);width:min(420px,92vw)}
+.login-wrap input{margin:8px 0;width:100%}
+.hidden{display:none}
+.badge{font-size:11px;padding:3px 10px;border-radius:99px;background:rgba(108,78,255,.25);border:1px solid var(--p)}

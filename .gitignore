@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# App data (regenerated on run — contains password hashes & sessions)
+*.db
+*.db-wal
+*.db-shm
+.env
+
+# OS / editors
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

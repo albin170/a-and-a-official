@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Admin Dashboard — A MUSIC</title><link rel="stylesheet" href="/css/admin.css"></head>
+<body>
+<div class="side">
+  <h2>🎵 A MUSIC ADMIN</h2>
+  <a data-t="dash" class="on">📊 Dashboard</a>
+  <a data-t="music">🎵 Music</a>
+  <a data-t="live">👥 Live Users</a>
+  <a data-t="analytics">📈 Analytics</a>
+  <a data-t="themes">🎨 Themes</a>
+  <a data-t="effects">😂 Sound Effects</a>
+  <a data-t="admins">👨‍💼 Administrators</a>
+  <a data-t="settings">⚙️ Settings</a>
+  <a id="logout" style="margin-top:auto">Logout</a>
+  <div id="meBox" style="font-size:12px;color:var(--mut)"></div>
+</div>
+<div class="main">
+  <section id="t-dash">
+    <h2>Dashboard <span class="badge" id="liveBadge"><span class="live-dot"></span> LIVE: 0</span></h2>
+    <div class="cards" id="stats"></div>
+    <div class="panel"><h3>Visitors per hour (today)</h3><div class="bar" id="hourly"></div></div>
+    <div class="panel"><h3>🔥 Most played</h3><div id="top"></div></div>
+  </section>
+
+  <section id="t-music" class="hidden">
+    <h2>🎵 Music Management</h2>
+    <div class="panel"><h3>Add New Song</h3>
+      <div class="row"><input id="m-title" placeholder="Song Name"><input id="m-artist" placeholder="Artist">
+      <select id="m-cat"><option>Trending</option><option>Chill</option><option>Workout</option><option>Relax</option><option>Gaming</option><option>Funny Sounds</option><option>Instrumental</option><option>Featured</option></select></div>
+      <div class="row"><input id="m-url" placeholder="Audio URL (or choose file)" style="flex:1"><input type="file" id="m-file" accept="audio/*"><input type="file" id="m-thumb" accept="image/*"></div>
+      <div class="row"><input id="m-desc" placeholder="Description"><input id="m-tags" placeholder="Tags comma separated"><label><input type="checkbox" id="m-feat"> Featured</label>
+      <button id="m-add">ADD SONG</button></div>
+    </div>
+    <table><thead><tr><th>Title</th><th>Category</th><th>Plays</th><th>Featured</th><th>On</th><th></th></tr></thead><tbody id="songs"></tbody></table>
+  </section>
+
+  <section id="t-live" class="hidden">
+    <h2>👥 <span class="live-dot"></span> Live users: <span id="liveCount">0</span></h2>
+    <p style="color:var(--mut);font-size:13px">Updates in real time via WebSocket — no refresh needed. Guests are auto-named Guest-####, no registration.</p>
+    <table><thead><tr><th>User</th><th>Entered</th><th>Current Song</th><th>Duration</th></tr></thead><tbody id="liveRows"></tbody></table>
+  </section>
+
+  <section id="t-analytics" class="hidden">
+    <h2>📈 Analytics</h2><div class="cards" id="stats2"></div>
+    <div class="panel"><h3>Song analytics (click a song)</h3><div id="songDetail" style="font-size:13px">Select a song in Music tab → Analytics.</div></div>
+  </section>
+
+  <section id="t-themes" class="hidden">
+    <h2>🎨 Theme Builder</h2>
+    <div class="panel"><div class="row">
+      <input id="th-name" value="Cyberpunk"><input type="color" id="th-p" value="#6C4EFF" style="max-width:70px"><input type="color" id="th-s" value="#00E5FF" style="max-width:70px">
+      <select id="th-bg"><option value="dark">Dark</option><option value="light">Light</option></select>
+      <select id="th-btn"><option value="rounded">Rounded</option><option value="square">Square</option></select>
+      <select id="th-font"><option>Inter</option><option>Arial</option><option>Georgia</option><option>monospace</option></select>
+      <select id="th-anim"><option value="neon">Neon</option><option value="none">None</option></select>
+      <select id="th-player"><option value="glass">Glass</option><option value="solid">Solid</option></select>
+      <input id="th-site" value="A MUSIC">
+    </div>
+    <div class="row"><button id="th-save">SAVE THEME</button><button class="ghost" id="th-preview">LIVE PREVIEW</button></div>
+    <div id="thPrev" style="border:1px dashed var(--p);border-radius:12px;padding:18px;text-align:center;margin-top:10px">🎵 <b id="thPrevName">A MUSIC</b><br><span style="font-size:12px">Music • Customize • Play</span></div>
+    </div>
+    <table><thead><tr><th>Name</th><th>Site</th><th>Active</th><th></th></tr></thead><tbody id="themes"></tbody></table>
+  </section>
+
+  <section id="t-effects" class="hidden">
+    <h2>😂 Sound Effect Management</h2>
+    <div class="panel"><div class="row"><input id="e-name" placeholder="Name e.g. Funny Horn"><input id="e-icon" value="😂" style="max-width:70px">
+      <select id="e-cat"><option>Funny</option><option>Animals</option><option>Action</option></select>
+      <input id="e-min" type="number" value="30" title="freq min sec"><input id="e-max" type="number" value="120" title="freq max sec">
+      <input id="e-prob" type="number" value="15" title="probability %"><input type="file" id="e-file" accept="audio/*">
+      <button id="e-add">SAVE</button></div>
+      <p style="font-size:12px;color:var(--mut)">Empty audio = synthesized live in browser. Frequency/probability drive Chaos Mode randomness.</p></div>
+    <table><thead><tr><th></th><th>Name</th><th>Freq (s)</th><th>Prob %</th><th>Uses</th><th>On</th><th></th></tr></thead><tbody id="fx"></tbody></table>
+  </section>
+
+  <section id="t-admins" class="hidden">
+    <h2>👨‍💼 Administrators</h2>
+    <div class="panel"><div class="row"><input id="a-name" placeholder="Name"><select id="a-role"><option value="admin">Admin</option><option value="content_manager">Content Manager</option><option value="analytics_viewer">Analytics Manager</option><option value="super_admin">Super Admin</option></select><button id="a-add">+ Create Admin</button></div>
+    <div id="a-out" style="font-size:13px"></div></div>
+    <table><thead><tr><th>Admin ID</th><th>Name</th><th>Role</th><th>Created</th><th></th></tr></thead><tbody id="admins"></tbody></table>
+  </section>
+
+  <section id="t-settings" class="hidden">
+    <h2>⚙️ Settings</h2><div class="panel"><div class="row"><input id="s-site" placeholder="site_name"><input id="s-tag" placeholder="tagline"></div>
+    <div class="row"><button id="s-save">SAVE</button></div></div>
+  </section>
+</div>
+<script>
+const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
+const T=()=>localStorage.getItem("bf_admin_token")||"";
+const H=()=>({"Content-Type":"application/json","X-Admin-Token":T()});
+const me=JSON.parse(localStorage.getItem("bf_admin")||"{}");
+if(!T())location.href="/admin/login.html";
+$("#meBox").textContent=`${me.admin_id||""} • ${me.role||""}`;
+$$(".side a[data-t]").forEach(a=>a.onclick=()=>{$$(".side a").forEach(x=>x.classList.remove("on"));a.classList.add("on");$$(".main section").forEach(s=>s.classList.add("hidden"));$("#t-"+a.dataset.t).classList.remove("hidden");refresh(a.dataset.t);});
+$("#logout").onclick=async()=>{await fetch("/api/admin/logout",{method:"POST",headers:H()}).catch(()=>{});localStorage.removeItem("bf_admin_token");location.href="/admin/login.html";};
+async function j(r){if(!r.ok)throw new Error((await r.text()).slice(0,300));return r.json();}
+async function refresh(t){
+  if(t==="dash"||!t){const o=await j(await fetch("/api/analytics/overview",{headers:H()}));
+    $("#stats").innerHTML=`<div class="stat"><b>${o.visitors_today}</b><br><span>👥 Visitors today</span></div><div class="stat"><b>${o.songs_played}</b><br><span>🎵 Songs played</span></div><div class="stat"><b>${Math.round(o.total_time_sec/3600)}h</b><br><span>⏱️ Total time</span></div><div class="stat"><b>${o.effects_used}</b><br><span>😂 Effects used</span></div>`;
+    $("#stats2").innerHTML=$("#stats").innerHTML;
+    $("#hourly").innerHTML=(o.hourly||[]).map(h=>`<i style="height:${Math.min(100,h.n*15+6)}%" title="${h.h}:00 — ${h.n}"></i>`).join("")||"No data yet";
+    $("#top").innerHTML=(o.top_songs||[]).map((s,i)=>`<div>${i+1}. <b>${s.title}</b> — ${s.play_count} plays</div>`).join("");
+    $("#liveBadge").innerHTML=`<span class="live-dot"></span> LIVE: ${window.__live||0}`;
+  }
+  if(t==="music"||!t){const s=await j(await fetch("/api/songs/all",{headers:H()}));
+    $("#songs").innerHTML=s.map(x=>`<tr><td><b>${x.title}</b><br><span style="color:var(--mut)">${x.artist||""}</span></td><td>${x.category}</td><td>${x.play_count}</td><td>${x.featured?"⭐":""}</td><td>${x.enabled?"✅":"❌"}</td><td><button class="ghost" onclick="songDetail('${x.song_id}')">Stats</button> <button class="ghost" onclick="toggleSong('${x.song_id}',${x.enabled?0:1})">${x.enabled?"Disable":"Enable"}</button> <button class="ghost" onclick="delSong('${x.song_id}')">Delete</button></td></tr>`).join("");}
+  if(t==="effects"||!t){const f=await j(await fetch("/api/effects/all",{headers:H()}));
+    $("#fx").innerHTML=f.map(x=>`<tr><td style="font-size:20px">${x.icon||"😂"}</td><td>${x.name}</td><td>${x.frequency_min}–${x.frequency_max}</td><td>${x.probability}%</td><td>${x.use_count}</td><td>${x.enabled?"✅":"❌"}</td><td><button class="ghost" onclick="toggleFx('${x.effect_id}',${x.enabled?0:1})">Toggle</button> <button class="ghost" onclick="delFx('${x.effect_id}')">Delete</button></td></tr>`).join("");}
+  if(t==="themes"||!t){const th=await j(await fetch("/api/themes"));
+    $("#themes").innerHTML=th.map(x=>`<tr><td>${x.name}</td><td>${x.site_name||""}</td><td>${x.is_active?"✅ active":""}</td><td>${x.is_active?"":`<button onclick="activateTheme('${x.theme_id}')">Activate</button>`}</td></tr>`).join("");}
+  if(t==="admins"||!t){const a=await j(await fetch("/api/admins",{headers:H()}));
+    $("#admins").innerHTML=a.map(x=>`<tr><td><b>${x.admin_id}</b></td><td>${x.name}</td><td>${x.role}</td><td>${(x.created_at||"").slice(0,10)}</td><td>${x.admin_id!==me.admin_id?`<button class="ghost" onclick="delAdmin('${x.admin_id}')">Delete</button>`:"(you)"}</td></tr>`).join("");}
+  if(t==="live"||!t){loadLive();}
+  if(t==="settings"||!t){const s=await j(await fetch("/api/settings"));$("#s-site").value=s.site_name||"";$("#s-tag").value=s.tagline||"";}
+}
+window.toggleSong=async(id,en)=>{await j(await fetch("/api/songs/"+id,{method:"PUT",headers:H(),body:JSON.stringify({enabled:en})}));refresh("music");};
+window.delSong=async id=>{if(!confirm("Delete song?"))return;await j(await fetch("/api/songs/"+id,{method:"DELETE",headers:H()}));refresh("music");};
+window.songDetail=async id=>{const o=await j(await fetch(`/api/analytics/songs/${id}`,{headers:H()}));$("#songDetail").innerHTML=`<b>${o.song.title}</b> — plays ${o.song.play_count}, unique ${o.unique_sessions}, avg ${o.avg_listen_sec}s, done ${o.completions}, skipped ${o.skips}`;};
+window.toggleFx=async(id,en)=>{await j(await fetch("/api/effects/"+id,{method:"PUT",headers:H(),body:JSON.stringify({enabled:en})}));refresh("effects");};
+window.delFx=async id=>{if(!confirm("Delete effect?"))return;await j(await fetch("/api/effects/"+id,{method:"DELETE",headers:H()}));refresh("effects");};
+window.activateTheme=async id=>{await j(await fetch("/api/themes/"+id,{method:"PUT",headers:H(),body:JSON.stringify({is_active:1})}));refresh("themes");};
+window.delAdmin=async id=>{if(!confirm("Delete "+id+"?"))return;await j(await fetch("/api/admins/"+id,{method:"DELETE",headers:H()}));refresh("admins");};
+$("#m-add").onclick=async()=>{
+  const fd=new FormData();fd.append("title",$("#m-title").value||"Untitled");fd.append("artist",$("#m-artist").value);
+  fd.append("category",$("#m-cat").value);fd.append("description",$("#m-desc").value);fd.append("tags",$("#m-tags").value);
+  fd.append("featured",$("#m-feat").checked?"1":"0");fd.append("audio_url",$("#m-url").value);
+  if($("#m-file").files[0])fd.append("audio",$("#m-file").files[0]);if($("#m-thumb").files[0])fd.append("thumbnail",$("#m-thumb").files[0]);
+  const r=await fetch("/api/songs/upload",{method:"POST",headers:{"X-Admin-Token":T()},body:fd});
+  if(!r.ok){alert(await r.text());return;}alert("Song added ✅");refresh("music");
+};
+$("#e-add").onclick=async()=>{
+  const fd=new FormData();[["name","e-name"],["icon","e-icon"],["category","e-cat"],["frequency_min","e-min"],["frequency_max","e-max"],["probability","e-prob"]].forEach(([k,id])=>fd.append(k,$("#"+id).value));
+  if($("#e-file").files[0])fd.append("audio",$("#e-file").files[0]);
+  const r=await fetch("/api/effects",{method:"POST",headers:{"X-Admin-Token":T()},body:fd});
+  if(!r.ok){alert(await r.text());return;}alert("Effect saved ✅");refresh("effects");
+};
+$("#a-add").onclick=async()=>{
+  const r=await fetch("/api/admin/create",{method:"POST",headers:H(),body:JSON.stringify({name:$("#a-name").value||"Admin",role:$("#a-role").value})});
+  const o=await r.json();
+  $("#a-out").innerHTML=!r.ok?`❌ ${o.detail}`:`✅ Created — <b>ID: ${o.admin_id}</b> <b>PW: ${o.password}</b> (${o.role}) — copy now, shown once!`;
+  refresh("admins");
+};
+$("#th-save").onclick=async()=>{
+  const body={name:$("#th-name").value,primary_color:$("#th-p").value,secondary_color:$("#th-s").value,background:$("#th-bg").value,button_style:$("#th-btn").value,font_family:$("#th-font").value,animation:$("#th-anim").value,player_style:$("#th-player").value,site_name:$("#th-site").value};
+  const o=await j(await fetch("/api/themes",{method:"POST",headers:H(),body:JSON.stringify(body)}));
+  await j(await fetch("/api/themes/"+o.theme_id,{method:"PUT",headers:H(),body:JSON.stringify({...body,is_active:1})}));
+  alert("Theme saved & activated ✅");refresh("themes");
+};
+$("#th-preview").onclick=()=>{document.documentElement.style.setProperty("--p",$("#th-p").value);$("#thPrevName").textContent=$("#th-site").value;$("#thPrev").style.background=`linear-gradient(135deg,${$("#th-p").value},${$("#th-s").value})`;};
+$("#s-save").onclick=async()=>{await j(await fetch("/api/settings",{method:"PUT",headers:H(),body:JSON.stringify({site_name:$("#s-site").value,tagline:$("#s-tag").value})}));alert("Saved ✅");};
+async function loadLive(){
+  try{const o=await j(await fetch("/api/live",{headers:H()}));window.__live=o.count;
+    $("#liveCount").textContent=o.count;$("#liveBadge").innerHTML=`<span class="live-dot"></span> LIVE: ${o.count}`;
+    $("#liveRows").innerHTML=o.users.map(u=>`<tr><td><b>${u.guest_id}</b></td><td>${u.entered}</td><td>${u.current_song||"-"}</td><td>${u.duration}</td></tr>`).join("")||"<tr><td colspan=4>No one online right now</td></tr>";
+  }catch{}
+}
+// realtime websocket
+(function(){try{const ws=new WebSocket((location.protocol==="https:"?"wss://":"ws://")+location.host+"/ws/live");
+ws.onmessage=e=>{const m=JSON.parse(e.data);window.__live=m.count;$("#liveCount").textContent=m.count;$("#liveBadge").innerHTML=`<span class="live-dot"></span> LIVE: ${m.count}`;
+if(!$("#t-live").classList.contains("hidden"))$("#liveRows").innerHTML=m.users.map(u=>`<tr><td><b>${u.guest_id}</b></td><td>-</td><td>${u.song||"-"}</td><td>${u.duration}</td></tr>`).join("")||"<tr><td colspan=4>No one online</td></tr>";};}catch{}})();
+refresh();
+</script></body></html>

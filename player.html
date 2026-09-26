@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Audio Studio — A MUSIC</title><link rel="stylesheet" href="/css/style.css"></head>
+<body>
+<nav class="nav"><a class="logo" href="/">🎵 <span class="site-name">A MUSIC</span></a>
+<div class="nav-links"><a href="/">Home</a><a href="/music.html">Library</a><a href="/player.html" class="active">Studio</a><a href="/effects.html">😂 Effects</a></div><span></span></nav>
+<div class="wrap">
+  <h2 class="section-title">🎚️ Music Control Studio</h2>
+  <div class="studio">
+    <div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap">
+      <div class="disc" id="disc" style="width:64px;height:64px;font-size:30px">🎵</div>
+      <div style="flex:1;min-width:200px">
+        <select id="songSel"></select>
+        <div style="display:flex;gap:8px;margin-top:8px;align-items:center">
+          <button class="icon-btn big" id="play">▶</button>
+          <span id="time" style="font-size:12px;color:var(--muted)">00:00 / 00:00</span>
+        </div>
+        <div class="progress" id="prog" style="margin-top:8px"><i id="fill" style="width:0%"></i></div>
+      </div>
+    </div>
+    <div class="presets" id="presets"></div>
+    <div id="ctls"></div>
+    <div class="chaos">
+      <b>😂 MAKE IT CHAOTIC</b>
+      <div class="chaos-lvls" id="chaosLvls"></div>
+      <p style="font-size:12px;color:var(--muted);margin-top:8px">Chaos mode randomly drops funny sounds while music plays.</p>
+    </div>
+  </div>
+</div>
+<audio id="audio" preload="auto" crossorigin="anonymous"></audio>
+<script src="/js/app.js"></script><script src="/js/audio-engine.js"></script>
+<script>
+const audio=$("#audio"), engine=new AudioEngine(audio);
+let SONGS=[], FX=[], chaos="OFF";
+const CTLS=[["volume","🔊 Volume",70],["bass","🎚️ Bass",50],["treble","🎚️ Treble",50],["beat","🥁 Beat",50],["intensity","⚡ Beat Intensity",50],["speed","⏩ Speed",33],["vocal","🎤 Vocal",50],["pitch","🎵 Pitch",50],["reverb","🌊 Reverb",0],["echo","🔁 Echo",0],["distortion","⚡ Distortion",0],["stereo","🎧 Stereo",50]];
+$("#ctls").innerHTML=CTLS.map(([k,l,v])=>`<div class="ctl"><label>${l} <b id="v-${k}">${v}</b></label><input type="range" min="0" max="100" value="${v}" id="c-${k}"></div>`).join("");
+function paint(r){ r.style.setProperty("--fill",(r.value/r.max*100)+"%"); }
+$$("input[type=range]").forEach(r=>{paint(r);r.oninput=()=>{paint(r);$("#v-"+r.id.slice(2)).textContent=r.value;apply();};});
+["Normal","Deep Bass","Club","Rock","Chill","Robot","Underwater","Old Radio","8-Bit","Funny","Chaos 💀"].forEach(p=>{
+  const b=document.createElement("button");b.className="chip";b.textContent=p;
+  b.onclick=()=>{const pr=engine.preset(p.replace(" 💀",""));Object.entries(pr).forEach(([k,v])=>{const el=$("#c-"+k);if(el){el.value=v;paint(el);$("#v-"+k).textContent=v;}});apply();toast("Preset: "+p);};
+  $("#presets").appendChild(b);
+});
+["OFF","LOW","MEDIUM","HIGH","INSANE 💀"].forEach(l=>{
+  const b=document.createElement("button");b.className="chip"+(l==="OFF"?" on":"");b.textContent=l;b.dataset.l=l;
+  b.onclick=()=>{chaos=l;$$("#chaosLvls .chip").forEach(x=>x.classList.remove("on"));b.classList.add("on");
+    engine.setChaos(l,FX,fireFx);toast("Chaos: "+l);};
+  $("#chaosLvls").appendChild(b);
+});
+function apply(){
+  const g=id=>+$("#c-"+id).value;
+  engine.set({volume:g("volume")/100,bass:g("bass"),treble:g("treble"),speed:0.5+g("speed")/100*1.5,
+    pitch:g("pitch"),echo:g("echo"),reverb:g("reverb"),distortion:g("distortion"),stereo:g("stereo"),vocal:g("vocal")});
+}
+async function fireFx(fx){
+  engine.playSynth(fx.name);
+  api("/api/effects/"+fx.effect_id+"/use",{method:"POST",body:{session_id:sessionId}}).catch(()=>{});
+  toast(`${fx.icon||"😂"} ${fx.name}!`);
+  heartbeat(window.__currentSong||"");
+}
+async function load(){
+  SONGS=await api("/api/songs").catch(()=>[]); FX=await api("/api/effects").catch(()=>[]);
+  const last=JSON.parse(localStorage.getItem("bf_last_song")||"null");
+  $("#songSel").innerHTML=SONGS.map(s=>`<option value="${s.song_id}">${s.title} — ${s.artist||""}</option>`).join("");
+  if(last){$("#songSel").value=last.song_id;audio.src=last.audio_url;window.__currentSong=last.title;}
+  else if(SONGS[0]){audio.src=SONGS[0].audio_url;window.__currentSong=SONGS[0].title;}
+}
+$("#songSel").onchange=e=>{const s=SONGS.find(x=>x.song_id===e.target.value);if(s){audio.src=s.audio_url;window.__currentSong=s.title;engine.ensure();audio.play();$("#play").textContent="⏸";heartbeat(s.title);api("/api/songs/"+s.song_id+"/play",{method:"POST",body:{session_id:sessionId}}).catch(()=>{});}};
+$("#play").onclick=()=>{engine.ensure();apply();if(audio.paused){audio.play();$("#play").textContent="⏸";}else{audio.pause();$("#play").textContent="▶";}};
+audio.ontimeupdate=()=>{if(audio.duration){$("#fill").style.width=(audio.currentTime/audio.duration*100)+"%";const f=s=>`${String(Math.floor(s/60)).padStart(2,"0")}:${String(Math.floor(s%60)).padStart(2,"0")}`;$("#time").textContent=`${f(audio.currentTime)} / ${f(audio.duration)}`;}};
+$("#prog").onclick=e=>{const r=e.currentTarget.getBoundingClientRect();if(audio.duration)audio.currentTime=((e.clientX-r.left)/r.width)*audio.duration;};
+load();
+</script></body></html>

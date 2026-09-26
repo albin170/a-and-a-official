@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>A MUSIC — Music • Customize • Play • Remix</title>
+<link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+<nav class="nav">
+  <a class="logo" href="/">🎵 <span class="site-name">A MUSIC</span></a>
+  <div class="nav-links">
+    <a href="/" class="active">Home</a><a href="/music.html">Library</a>
+    <a href="/player.html">Studio</a><a href="/effects.html">😂 Effects</a>
+    <a href="/admin/login.html">Admin</a>
+  </div>
+  <span id="guestBadge" style="color:var(--muted);font-size:13px"></span>
+</nav>
+
+<header class="hero">
+  <h1>🎵 <span class="site-name">A MUSIC</span></h1>
+  <p>Music • Customize • Play • Remix</p>
+  <a class="btn" href="/music.html">Explore Music</a>
+  <a class="btn ghost" href="/player.html">Open Studio 🎚️</a>
+  <p style="margin-top:14px;font-size:13px;letter-spacing:0">No account. No login. Just press play. 👇 <span id="liveCount"></span></p>
+</header>
+
+<div class="wrap">
+  <div class="chips" id="cats"></div>
+  <h2 class="section-title">⭐ Featured</h2>
+  <div class="grid" id="featured"></div>
+  <h2 class="section-title">🔥 Trending</h2>
+  <div class="grid" id="trending"></div>
+  <h2 class="section-title">🎧 Based on this session (no account needed)</h2>
+  <div class="grid" id="recs"></div>
+  <p id="recNote" style="color:var(--muted);font-size:13px;margin-top:8px"></p>
+</div>
+
+<div class="mini-player" id="mini">
+  <div class="disc" id="miniDisc">🎵</div>
+  <div style="min-width:0;flex:1">
+    <div id="miniTitle" style="font-weight:800;font-size:14px">Nothing playing</div>
+    <div class="progress" id="miniProg"><i id="miniFill" style="width:0%"></i></div>
+  </div>
+  <button class="icon-btn big" id="miniPlay">▶</button>
+  <a class="icon-btn" href="/player.html" title="Open studio">🎚️</a>
+</div>
+
+<div class="foot">A MUSIC • Web Audio API • Made for the love of loud 🔊</div>
+<audio id="audio" preload="none"></audio>
+<script src="/js/app.js"></script>
+<script src="/js/audio-engine.js"></script>
+<script>
+const audio = $("#audio");
+const engine = new AudioEngine(audio);
+let SONGS = [];
+$("#guestBadge").textContent = guestId;
+
+async function load() {
+  const [cats, songs] = await Promise.all([api("/api/categories").catch(()=>[]), api("/api/songs").catch(()=>[])]);
+  SONGS = songs;
+  $("#cats").innerHTML = `<button class="chip on" data-c="All">All</button>` + cats.map(c=>`<button class="chip" data-c="${c}">${c}</button>`).join("");
+  $$("#cats .chip").forEach(b=>b.onclick=()=>{ $$("#cats .chip").forEach(x=>x.classList.remove("on")); b.classList.add("on"); render(b.dataset.c); });
+  render("All");
+  const feat = songs.filter(s=>s.featured).slice(0,4);
+  $("#featured").innerHTML = feat.map(card).join("") || "<p style='color:var(--muted)'>No featured songs yet.</p>";
+  bindCards();
+  try {
+    const r = await api("/api/recommend?session_id="+sessionId);
+    $("#recs").innerHTML = r.picks.map(card).join("");
+    $("#recNote").textContent = r.note; bindCards();
+  } catch {}
+}
+function card(s){ return `<div class="card" data-id="${s.song_id}"><div class="thumb">${thumb(s)}</div><h3>${s.title}</h3><p>${s.artist||""} • ${s.category||""} • ▶ ${s.play_count||0}</p><span class="pill">${s.category||"Music"}</span></div>`; }
+function thumb(s){ const m={"Chill":"🌙","Workout":"💪","Relax":"🌊","Gaming":"🎮","Trending":"🔥","Instrumental":"🎹","Funny Sounds":"😂"}; return m[s.category]||"🎵"; }
+function render(cat){
+  const list = (cat==="All"?SONGS:SONGS.filter(s=>s.category===cat)).slice(0,8);
+  $("#trending").innerHTML = list.map(card).join("") || "<p style='color:var(--muted)'>Nothing here yet.</p>";
+  bindCards();
+}
+function bindCards(){
+  $$(".card").forEach(c=>c.onclick=()=>playSong(c.dataset.id));
+}
+async function playSong(id){
+  const s = SONGS.find(x=>x.song_id===id); if(!s) return;
+  window.__currentSong = s.title; $("#miniTitle").textContent = "🎵 "+s.title+" — "+(s.artist||"");
+  audio.src = s.audio_url; engine.ensure(); await audio.play().catch(()=>toast("Tap ▶ to start audio"));
+  $("#mini").classList.add("playing"); $("#miniPlay").textContent="⏸";
+  heartbeat(s.title).catch(()=>{});
+  api("/api/songs/"+id+"/play",{method:"POST",body:{session_id:sessionId}}).catch(()=>{});
+  localStorage.setItem("bf_last_song", JSON.stringify(s));
+}
+$("#miniPlay").onclick = ()=>{ engine.ensure(); if(audio.paused){audio.play();$("#miniPlay").textContent="⏸";$("#mini").classList.add("playing");} else {audio.pause();$("#miniPlay").textContent="▶";$("#mini").classList.remove("playing");} };
+audio.ontimeupdate = ()=>{ if(audio.duration) $("#miniFill").style.width = (audio.currentTime/audio.duration*100)+"%"; };
+$("#miniProg").onclick = e=>{ const r=e.currentTarget.getBoundingClientRect(); if(audio.duration) audio.currentTime = ((e.clientX-r.left)/r.width)*audio.duration; };
+load();
+</script>
+</body>
+</html>
