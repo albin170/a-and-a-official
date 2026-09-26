@@ -1,138 +1,49 @@
-"""A Music backend — FastAPI + SQLite + WebSocket live users.
-Run:  pip install -r requirements.txt
-      python server.py
-Serves the whole site at http://localhost:8000
+"""A Music backend — FastAPI + Supabase (Postgres + Storage).
+Works the same locally and on Vercel serverless.
+
+Local run:  set SUPABASE_URL + SUPABASE_SERVICE_KEY env vars (see .env.example),
+            pip install -r requirements.txt,  python backend/server.py
+Vercel:     rewrites /api/* to api/index.py, static files served by Vercel CDN.
 """
-import os, sqlite3, uuid, hashlib, secrets, json, time
+import mimetypes
+import os
+import secrets
+import uuid
+import hashlib
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Header, WebSocket, WebSocketDisconnect, Request
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
 
-BASE = Path(__file__).resolve().parent.parent  # beatforge/
-DB_PATH = BASE / "backend" / "beatforge.db"
-MUSIC_DIR = BASE / "assets" / "music"
-EFFECTS_DIR = BASE / "assets" / "effects"
-IMAGES_DIR = BASE / "assets" / "images"
-for d in (MUSIC_DIR, EFFECTS_DIR, IMAGES_DIR):
-    d.mkdir(parents=True, exist_ok=True)
+import sys as _sys
+_sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-app = FastAPI(title="A Music", version="1.0.0")
+from backend.supa import sb
+
+BASE = Path(__file__).resolve().parent.parent  # project root (a/)
+
+app = FastAPI(title="A Music", version="2.0.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True,
                    allow_methods=["*"], allow_headers=["*"])
 
-# ---------- DB ----------
-def db():
-    con = sqlite3.connect(str(DB_PATH))
-    con.row_factory = sqlite3.Row
-    return con
+# ---------- helpers ----------
+def now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
-def init_db():
-    con = db()
-    c = con.cursor()
-    c.executescript("""
-    CREATE TABLE IF NOT EXISTS admins(
-      admin_id TEXT PRIMARY KEY, name TEXT, password_hash TEXT, salt TEXT,
-      role TEXT DEFAULT 'admin', created_at TEXT);
-    CREATE TABLE IF NOT EXISTS admin_tokens(
-      token TEXT PRIMARY KEY, admin_id TEXT, expires_at TEXT);
-    CREATE TABLE IF NOT EXISTS songs(
-      song_id TEXT PRIMARY KEY, title TEXT, artist TEXT, category TEXT,
-      audio_url TEXT, thumbnail_url TEXT, description TEXT, tags TEXT,
-      featured INTEGER DEFAULT 0, enabled INTEGER DEFAULT 1,
-      play_count INTEGER DEFAULT 0, created_at TEXT);
-    CREATE TABLE IF NOT EXISTS sound_effects(
-      effect_id TEXT PRIMARY KEY, name TEXT, icon TEXT, category TEXT,
-      audio_url TEXT, trigger_mode TEXT DEFAULT 'random',
-      frequency_min INTEGER DEFAULT 30, frequency_max INTEGER DEFAULT 120,
-      probability INTEGER DEFAULT 15, enabled INTEGER DEFAULT 1, use_count INTEGER DEFAULT 0);
-    CREATE TABLE IF NOT EXISTS themes(
-      theme_id TEXT PRIMARY KEY, name TEXT, primary_color TEXT, secondary_color TEXT,
-      background TEXT, button_style TEXT, font_family TEXT, animation TEXT,
-      player_style TEXT, site_name TEXT, logo_url TEXT, is_active INTEGER DEFAULT 0);
-    CREATE TABLE IF NOT EXISTS settings(
-      key TEXT PRIMARY KEY, value TEXT);
-    CREATE TABLE IF NOT EXISTS sessions(
-      session_id TEXT PRIMARY KEY, guest_id TEXT, entry_time TEXT, last_activity TEXT,
-      exit_time TEXT, duration_sec INTEGER DEFAULT 0, current_song TEXT,
-      songs_played INTEGER DEFAULT 0, effects_used INTEGER DEFAULT 0, theme TEXT);
-    CREATE TABLE IF NOT EXISTS play_history(
-      id TEXT PRIMARY KEY, session_id TEXT, song_id TEXT,
-      started_at TEXT, stopped_at TEXT, duration_sec INTEGER DEFAULT 0,
-      completed INTEGER DEFAULT 0, skipped INTEGER DEFAULT 0);
-    """)
-    # default settings
-    defaults = {"site_name": "A MUSIC", "tagline": "Music • Customize • Play • Remix",
-                "chaos_enabled": "1", "recommendations_enabled": "1"}
-    for k, v in defaults.items():
-        c.execute("INSERT OR IGNORE INTO settings(key,value) VALUES(?,?)", (k, v))
-    # default theme
-    c.execute("SELECT COUNT(*) n FROM themes")
-    if c.fetchone()["n"] == 0:
-        c.execute("""INSERT INTO themes(theme_id,name,primary_color,secondary_color,background,
-          button_style,font_family,animation,player_style,site_name,is_active)
-          VALUES('theme-cyberpunk','Cyberpunk','#6C4EFF','#00E5FF','dark','rounded','Inter','neon','glass','A MUSIC',1)""")
-    con.commit()
-    # seed songs (public sample mp3s so the demo plays instantly)
-    c.execute("SELECT COUNT(*) n FROM songs")
-    if c.fetchone()["n"] == 0:
-        seed = [
-            ("Midnight Drive", "Neon Coast", "Chill", "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3", 1, "Chill, Night, Electronic"),
-            ("Ocean Dreams", "Waveform", "Relax", "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-2.mp3", 1, "Relax, Ocean, Ambient"),
-            ("Cyber World", "Pixel Raid", "Gaming", "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-3.mp3", 1, "Gaming, Synth, Energy"),
-            ("Summer Beat", "Sun Parade", "Workout", "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-4.mp3", 0, "Workout, Pop, Energy"),
-            ("Night Rider", "Turbo Fox", "Trending", "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-5.mp3", 1, "Trending, Drive, Bass"),
-            ("Deep Focus", "Mono Mind", "Instrumental", "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-6.mp3", 0, "Instrumental, Focus"),
-        ]
-        for t, a, cat, url, feat, tags in seed:
-            c.execute("""INSERT INTO songs(song_id,title,artist,category,audio_url,thumbnail_url,
-              description,tags,featured,enabled,play_count,created_at)
-              VALUES(?,?,?,?,?,'',?,?,?,1,0,?)""",
-              (f"song-{uuid.uuid4().hex[:8]}", t, a, cat, url, feat, f"{t} by {a}. Demo track.", tags,
-               datetime.now(timezone.utc).isoformat()))
-    # seed funny effects (synthesized client-side; audio_url empty = synth)
-    c.execute("SELECT COUNT(*) n FROM sound_effects")
-    if c.fetchone()["n"] == 0:
-        fx = [("Cartoon Boing", "😂", "Funny"), ("Frog Croak", "🐸", "Funny"),
-              ("Chicken Cluck", "🐔", "Funny"), ("Explosion", "💥", "Funny"),
-              ("Car Horn", "🚗", "Funny"), ("Trumpet Fail", "🎺", "Funny"),
-              ("Ghost Woo", "👻", "Funny"), ("Robot Voice", "🤖", "Funny"),
-              ("Cat Meow", "🐱", "Funny"), ("Bass Drop", "🔊", "Funny"),
-              ("Scream", "😱", "Funny"), ("Wrong Answer", "🎺", "Funny")]
-        for n, icon, cat in fx:
-            c.execute("""INSERT INTO sound_effects(effect_id,name,icon,category,audio_url,
-              trigger_mode,frequency_min,frequency_max,probability,enabled,use_count)
-              VALUES(?,?,?,?,?,'random',30,120,15,1,0)""",
-              (f"fx-{uuid.uuid4().hex[:8]}", n, icon, cat, ""))
-    con.commit(); con.close()
-
-init_db()
-
-# ---------- auth helpers ----------
 def hash_pw(password: str, salt: str) -> str:
     return hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), 260_000).hex()
 
-def require_admin(x_admin_token: str = Header(default="")):
-    if not x_admin_token:
-        raise HTTPException(401, "Missing X-Admin-Token")
-    con = db(); c = con.cursor()
-    c.execute("SELECT * FROM admin_tokens WHERE token=?", (x_admin_token,))
-    row = c.fetchone()
-    if not row:
-        con.close(); raise HTTPException(401, "Invalid token")
-    if datetime.fromisoformat(row["expires_at"]) < datetime.now(timezone.utc):
-        c.execute("DELETE FROM admin_tokens WHERE token=?", (x_admin_token,))
-        con.commit(); con.close(); raise HTTPException(401, "Token expired")
-    c.execute("SELECT * FROM admins WHERE admin_id=?", (row["admin_id"],))
-    admin = dict(c.fetchone()); con.close()
-    return admin
+def fmt_dur(s: int) -> str:
+    return f"{s // 60:02d}:{s % 60:02d}"
 
-def need_roles(admin, *roles):
-    if admin["role"] not in roles:
-        raise HTTPException(403, f"Requires role: {'/'.join(roles)} (you are {admin['role']})")
+def as_time(iso: str, fmt="%H:%M:%S") -> str:
+    try:
+        return datetime.fromisoformat(iso).strftime(fmt)
+    except Exception:
+        return "-"
 
 ROLE_PERMS = {
     "super_admin": ["*"],
@@ -140,49 +51,132 @@ ROLE_PERMS = {
     "content_manager": ["music", "effects"],
     "analytics_viewer": ["analytics"],
 }
-def can(admin, perm):
+
+def require_admin(x_admin_token: str = Header(default="")) -> dict:
+    if not x_admin_token:
+        raise HTTPException(401, "Missing X-Admin-Token")
+    tok = sb().table("admin_tokens").select("*").eq("token", x_admin_token).execute().data
+    if not tok:
+        raise HTTPException(401, "Invalid token")
+    tok = tok[0]
+    if datetime.fromisoformat(tok["expires_at"]) < datetime.now(timezone.utc):
+        sb().table("admin_tokens").delete().eq("token", x_admin_token).execute()
+        raise HTTPException(401, "Token expired")
+    adm = sb().table("admins").select("*").eq("admin_id", tok["admin_id"]).execute().data
+    if not adm:
+        raise HTTPException(401, "Admin not found")
+    return adm[0]
+
+def need_perm(admin: dict, perm: str):
     p = ROLE_PERMS.get(admin["role"], [])
-    return "*" in p or perm in p
-def need_perm(admin, perm):
-    if not can(admin, perm):
+    if "*" not in p and perm not in p:
         raise HTTPException(403, f"Role '{admin['role']}' cannot access '{perm}'")
+
+def storage_upload(bucket: str, filename: str, data: bytes) -> str:
+    safe = f"{uuid.uuid4().hex[:10]}-{filename.replace(' ', '_')}"
+    ctype = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+    sb().storage.from_(bucket).upload(safe, data, {"content-type": ctype})
+    url = sb().storage.from_(bucket).get_public_url(safe)
+    return str(url)
+
+# ---------- first-run seed (idempotent; runs on cold start) ----------
+SEED_SONGS = [
+    ("Midnight Drive", "Neon Coast", "Chill", "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3", 1, "Chill, Night, Electronic"),
+    ("Ocean Dreams", "Waveform", "Relax", "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-2.mp3", 1, "Relax, Ocean, Ambient"),
+    ("Cyber World", "Pixel Raid", "Gaming", "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-3.mp3", 1, "Gaming, Synth, Energy"),
+    ("Summer Beat", "Sun Parade", "Workout", "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-4.mp3", 0, "Workout, Pop, Energy"),
+    ("Night Rider", "Turbo Fox", "Trending", "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-5.mp3", 1, "Trending, Drive, Bass"),
+    ("Deep Focus", "Mono Mind", "Instrumental", "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-6.mp3", 0, "Instrumental, Focus"),
+]
+SEED_FX = [("Cartoon Boing", "😂"), ("Frog Croak", "🐸"), ("Chicken Cluck", "🐔"),
+           ("Explosion", "💥"), ("Car Horn", "🚗"), ("Trumpet Fail", "🎺"),
+           ("Ghost Woo", "👻"), ("Robot Voice", "🤖"), ("Cat Meow", "🐱"),
+           ("Bass Drop", "🔊"), ("Scream", "😱"), ("Wrong Answer", "🎺")]
+
+def seed_if_empty():
+    db = sb()
+    for k, v in {"site_name": "A Music", "tagline": "Music • Customize • Play • Remix",
+                 "chaos_enabled": "1", "recommendations_enabled": "1"}.items():
+        if not db.table("settings").select("key").eq("key", k).execute().data:
+            db.table("settings").insert({"key": k, "value": v}).execute()
+    if not db.table("themes").select("theme_id").limit(1).execute().data:
+        db.table("themes").insert({
+            "theme_id": "theme-cyberpunk", "name": "Cyberpunk",
+            "primary_color": "#6C4EFF", "secondary_color": "#00E5FF",
+            "background": "dark", "button_style": "rounded", "font_family": "Inter",
+            "animation": "neon", "player_style": "glass",
+            "site_name": "A Music", "logo_url": "", "is_active": 1}).execute()
+    if not db.table("songs").select("song_id").limit(1).execute().data:
+        for t, a, cat, url, feat, tags in SEED_SONGS:
+            db.table("songs").insert({
+                "song_id": f"song-{uuid.uuid4().hex[:8]}", "title": t, "artist": a,
+                "category": cat, "audio_url": url, "thumbnail_url": "",
+                "description": f"{t} by {a}. Demo track.", "tags": tags,
+                "featured": feat, "enabled": 1, "play_count": 0,
+                "created_at": now_iso()}).execute()
+    if not db.table("sound_effects").select("effect_id").limit(1).execute().data:
+        for n, icon in SEED_FX:
+            db.table("sound_effects").insert({
+                "effect_id": f"fx-{uuid.uuid4().hex[:8]}", "name": n, "icon": icon,
+                "category": "Funny", "audio_url": "", "trigger_mode": "random",
+                "frequency_min": 30, "frequency_max": 120, "probability": 15,
+                "enabled": 1, "use_count": 0}).execute()
+    if not db.table("admins").select("admin_id").limit(1).execute().data:
+        salt = secrets.token_hex(16)
+        db.table("admins").insert({
+            "admin_id": "albin", "name": "albin",
+            "password_hash": hash_pw("evangely", salt), "salt": salt,
+            "role": "super_admin", "created_at": now_iso()}).execute()
+        print("Seeded default super admin albin — CHANGE ITS PASSWORD after first login.")
+
+try:
+    seed_if_empty()
+except Exception as e:
+    print(f"Seed skipped ({e}) — set SUPABASE_URL/SUPABASE_SERVICE_KEY and run schema.sql.")
 
 # ---------- admin: setup & login ----------
 @app.post("/api/admin/setup")
 def setup(name: str = Form("Super Admin"), admin_id: str = Form(""), password: str = Form("")):
-    con = db(); c = con.cursor()
-    c.execute("SELECT COUNT(*) n FROM admins")
-    if c.fetchone()["n"] > 0:
-        con.close(); raise HTTPException(400, "Setup already done — ask an existing admin to create your account.")
+    db = sb()
+    if db.table("admins").select("admin_id").limit(1).execute().data:
+        raise HTTPException(400, "Setup already done — ask an existing admin to create your account.")
     aid = admin_id.strip() or f"BF-ADM-{secrets.token_hex(2).upper()}"
     pwd = password or secrets.token_urlsafe(12)
     salt = secrets.token_hex(16)
-    c.execute("INSERT INTO admins VALUES(?,?,?,?,?,?)",
-              (aid, name, hash_pw(pwd, salt), salt, "super_admin", datetime.now(timezone.utc).isoformat()))
-    con.commit(); con.close()
+    db.table("admins").insert({
+        "admin_id": aid, "name": name, "password_hash": hash_pw(pwd, salt),
+        "salt": salt, "role": "super_admin", "created_at": now_iso()}).execute()
     return {"admin_id": aid, "password": pwd, "role": "super_admin",
             "message": "Super admin created. SAVE THE PASSWORD — it is never shown again."}
 
 @app.post("/api/admin/login")
 def login(payload: dict):
-    con = db(); c = con.cursor()
-    c.execute("SELECT * FROM admins WHERE admin_id=?", (payload.get("admin_id", "").strip(),))
-    row = c.fetchone()
-    if not row or hash_pw(payload.get("password", ""), row["salt"]) != row["password_hash"]:
-        con.close(); raise HTTPException(401, "Invalid Admin ID or password")
+    db = sb()
+    rows = db.table("admins").select("*").eq("admin_id", payload.get("admin_id", "").strip()).execute().data
+    if not rows or hash_pw(payload.get("password", ""), rows[0]["salt"]) != rows[0]["password_hash"]:
+        raise HTTPException(401, "Invalid Admin ID or password")
+    row = rows[0]
     token = secrets.token_urlsafe(32)
     exp = (datetime.now(timezone.utc) + timedelta(hours=12)).isoformat()
-    c.execute("INSERT INTO admin_tokens VALUES(?,?,?)", (token, row["admin_id"], exp))
-    con.commit(); con.close()
+    db.table("admin_tokens").insert({"token": token, "admin_id": row["admin_id"], "expires_at": exp}).execute()
     return {"token": token, "admin_id": row["admin_id"], "name": row["name"], "role": row["role"]}
-
-@app.get("/api/admin/me")
-def me(admin=Header(default="")):
-    return require_admin(admin)
 
 @app.post("/api/admin/logout")
 def logout(x_admin_token: str = Header(default="")):
-    con = db(); con.execute("DELETE FROM admin_tokens WHERE token=?", (x_admin_token,)); con.commit(); con.close()
+    sb().table("admin_tokens").delete().eq("token", x_admin_token).execute()
+    return {"ok": True}
+
+@app.put("/api/admin/password")
+def change_password(payload: dict, x_admin_token: str = Header(default="")):
+    admin = require_admin(x_admin_token)
+    if hash_pw(payload.get("current_password", ""), admin["salt"]) != admin["password_hash"]:
+        raise HTTPException(401, "Current password is wrong")
+    new = payload.get("new_password", "")
+    if len(new) < 4:
+        raise HTTPException(400, "New password too short (min 4 chars)")
+    salt = secrets.token_hex(16)
+    sb().table("admins").update(
+        {"password_hash": hash_pw(new, salt), "salt": salt}).eq("admin_id", admin["admin_id"]).execute()
     return {"ok": True}
 
 @app.post("/api/admin/create")
@@ -200,19 +194,17 @@ def create_admin(payload: dict, x_admin_token: str = Header(default="")):
     aid = f"BF-ADM-{secrets.token_hex(2).upper()}"
     pwd = secrets.token_urlsafe(10)
     salt = secrets.token_hex(16)
-    con = db()
-    con.execute("INSERT INTO admins VALUES(?,?,?,?,?,?)",
-                (aid, name, hash_pw(pwd, salt), salt, role, datetime.now(timezone.utc).isoformat()))
-    con.commit(); con.close()
+    sb().table("admins").insert({
+        "admin_id": aid, "name": name, "password_hash": hash_pw(pwd, salt),
+        "salt": salt, "role": role, "created_at": now_iso()}).execute()
     return {"admin_id": aid, "password": pwd, "role": role, "name": name}
 
 @app.get("/api/admins")
 def list_admins(x_admin_token: str = Header(default="")):
-    admin = require_admin(x_admin_token); need_perm(admin, "settings")
-    con = db()
-    rows = con.execute("SELECT admin_id,name,role,created_at FROM admins ORDER BY created_at").fetchall()
-    con.close()
-    return [dict(r) for r in rows]
+    admin = require_admin(x_admin_token)
+    need_perm(admin, "settings")
+    rows = sb().table("admins").select("admin_id,name,role,created_at").order("created_at").execute().data
+    return rows
 
 @app.delete("/api/admins/{aid}")
 def delete_admin(aid: str, x_admin_token: str = Header(default="")):
@@ -221,30 +213,30 @@ def delete_admin(aid: str, x_admin_token: str = Header(default="")):
         raise HTTPException(403, "Only Super Admin can delete admins")
     if aid == admin["admin_id"]:
         raise HTTPException(400, "You cannot delete yourself")
-    con = db(); con.execute("DELETE FROM admins WHERE admin_id=?", (aid,))
-    con.execute("DELETE FROM admin_tokens WHERE admin_id=?", (aid,))
-    con.commit(); con.close()
+    db = sb()
+    db.table("admins").delete().eq("admin_id", aid).execute()
+    db.table("admin_tokens").delete().eq("admin_id", aid).execute()
     return {"ok": True}
 
 # ---------- songs ----------
 @app.get("/api/songs")
 def get_songs(category: str = "", search: str = "", featured: str = ""):
-    con = db()
-    q = "SELECT * FROM songs WHERE enabled=1"
-    args = []
-    if category: q += " AND category=?"; args.append(category)
+    db = sb()
+    q = db.table("songs").select("*").eq("enabled", 1)
+    if category:
+        q = q.eq("category", category)
     if search:
-        q += " AND (title LIKE ? OR artist LIKE ? OR tags LIKE ?)"; args += [f"%{search}%"]*3
-    if featured == "1": q += " AND featured=1"
-    q += " ORDER BY featured DESC, play_count DESC"
-    rows = con.execute(q, args).fetchall(); con.close()
-    return [dict(r) for r in rows]
+        s = search.replace(",", " ").replace("%", "")
+        q = q.or_(f"title.ilike.%{s}%,artist.ilike.%{s}%,tags.ilike.%{s}%")
+    if featured == "1":
+        q = q.eq("featured", 1)
+    return q.order("featured", desc=True).order("play_count", desc=True).execute().data
 
 @app.get("/api/songs/all")
 def get_songs_all(x_admin_token: str = Header(default="")):
-    admin = require_admin(x_admin_token); need_perm(admin, "music")
-    con = db(); rows = con.execute("SELECT * FROM songs ORDER BY created_at DESC").fetchall(); con.close()
-    return [dict(r) for r in rows]
+    admin = require_admin(x_admin_token)
+    need_perm(admin, "music")
+    return sb().table("songs").select("*").order("created_at", desc=True).execute().data
 
 @app.post("/api/songs/upload")
 async def upload_song(x_admin_token: str = Header(default=""), title: str = Form(...),
@@ -252,78 +244,78 @@ async def upload_song(x_admin_token: str = Header(default=""), title: str = Form
                      description: str = Form(""), tags: str = Form(""),
                      featured: int = Form(0), audio_url: str = Form(""),
                      audio: UploadFile = File(None), thumbnail: UploadFile = File(None)):
-    admin = require_admin(x_admin_token); need_perm(admin, "music")
+    admin = require_admin(x_admin_token)
+    need_perm(admin, "music")
     a_url = audio_url.strip()
     if audio is not None and audio.filename:
-        fn = f"{uuid.uuid4().hex[:10]}-{audio.filename.replace(' ','_')}"
-        dest = MUSIC_DIR / fn
-        dest.write_bytes(await audio.read())
-        a_url = f"/assets/music/{fn}"
+        a_url = storage_upload("music", audio.filename, await audio.read())
     if not a_url:
         raise HTTPException(400, "Provide an audio file or an audio URL")
     t_url = ""
     if thumbnail is not None and thumbnail.filename:
-        fn = f"{uuid.uuid4().hex[:10]}-{thumbnail.filename.replace(' ','_')}"
-        (IMAGES_DIR / fn).write_bytes(await thumbnail.read())
-        t_url = f"/assets/images/{fn}"
+        t_url = storage_upload("images", thumbnail.filename, await thumbnail.read())
     sid = f"song-{uuid.uuid4().hex[:8]}"
-    con = db()
-    con.execute("""INSERT INTO songs VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (sid, title, artist, category, a_url, t_url, description, tags,
-                 int(featured), 1, 0, datetime.now(timezone.utc).isoformat()))
-    con.commit(); con.close()
+    sb().table("songs").insert({
+        "song_id": sid, "title": title, "artist": artist, "category": category,
+        "audio_url": a_url, "thumbnail_url": t_url, "description": description,
+        "tags": tags, "featured": int(featured), "enabled": 1, "play_count": 0,
+        "created_at": now_iso()}).execute()
     return {"song_id": sid}
 
 @app.put("/api/songs/{sid}")
 def update_song(sid: str, payload: dict, x_admin_token: str = Header(default="")):
-    admin = require_admin(x_admin_token); need_perm(admin, "music")
-    allowed = ("title", "artist", "category", "description", "tags", "featured", "enabled", "audio_url", "thumbnail_url")
-    sets = [f"{k}=?" for k in payload if k in allowed]
-    if not sets: raise HTTPException(400, "Nothing to update")
-    con = db()
-    con.execute(f"UPDATE songs SET {','.join(sets)} WHERE song_id=?",
-                [payload[k] for k in payload if k in allowed] + [sid])
-    con.commit(); con.close()
+    admin = require_admin(x_admin_token)
+    need_perm(admin, "music")
+    allowed = ("title", "artist", "category", "description", "tags", "featured",
+               "enabled", "audio_url", "thumbnail_url")
+    patch = {k: payload[k] for k in payload if k in allowed}
+    if not patch:
+        raise HTTPException(400, "Nothing to update")
+    sb().table("songs").update(patch).eq("song_id", sid).execute()
     return {"ok": True}
 
 @app.delete("/api/songs/{sid}")
 def delete_song(sid: str, x_admin_token: str = Header(default="")):
-    admin = require_admin(x_admin_token); need_perm(admin, "music")
-    con = db(); con.execute("DELETE FROM songs WHERE song_id=?", (sid,)); con.commit(); con.close()
+    admin = require_admin(x_admin_token)
+    need_perm(admin, "music")
+    sb().table("songs").delete().eq("song_id", sid).execute()
     return {"ok": True}
 
 @app.post("/api/songs/{sid}/play")
 def play_song(sid: str, payload: dict = None):
-    con = db()
-    con.execute("UPDATE songs SET play_count=play_count+1 WHERE song_id=?", (sid,))
+    db = sb()
+    rows = db.table("songs").select("play_count").eq("song_id", sid).execute().data
+    if rows:
+        db.table("songs").update({"play_count": (rows[0]["play_count"] or 0) + 1}).eq("song_id", sid).execute()
     if payload and payload.get("session_id"):
-        sidn = payload["session_id"]
-        con.execute("UPDATE sessions SET songs_played=songs_played+1, current_song=?, last_activity=? WHERE session_id=?",
-                    (sid, datetime.now(timezone.utc).isoformat(), sidn))
-        con.execute("INSERT INTO play_history(id,session_id,song_id,started_at) VALUES(?,?,?,?)",
-                    (uuid.uuid4().hex, sidn, sid, datetime.now(timezone.utc).isoformat()))
-    con.commit(); con.close()
+        srows = db.table("sessions").select("songs_played").eq("session_id", payload["session_id"]).execute().data
+        if srows:
+            db.table("sessions").update({
+                "songs_played": (srows[0]["songs_played"] or 0) + 1,
+                "current_song": sid, "last_activity": now_iso()
+            }).eq("session_id", payload["session_id"]).execute()
+        db.table("play_history").insert({
+            "id": uuid.uuid4().hex, "session_id": payload["session_id"],
+            "song_id": sid, "started_at": now_iso()}).execute()
     return {"ok": True}
 
 @app.get("/api/categories")
 def categories():
-    con = db()
-    rows = con.execute("SELECT DISTINCT category FROM songs WHERE enabled=1").fetchall(); con.close()
+    rows = sb().table("songs").select("category").eq("enabled", 1).execute().data
     base = ["Trending", "Chill", "Workout", "Relax", "Gaming", "Funny Sounds", "Instrumental", "Featured"]
-    found = [r["category"] for r in rows]
+    found = list(dict.fromkeys([r["category"] for r in rows if r.get("category")]))
     return base + [c for c in found if c not in base]
 
 # ---------- effects ----------
 @app.get("/api/effects")
 def get_effects():
-    con = db(); rows = con.execute("SELECT * FROM sound_effects WHERE enabled=1").fetchall(); con.close()
-    return [dict(r) for r in rows]
+    return sb().table("sound_effects").select("*").eq("enabled", 1).execute().data
 
 @app.get("/api/effects/all")
 def get_effects_all(x_admin_token: str = Header(default="")):
-    admin = require_admin(x_admin_token); need_perm(admin, "effects")
-    con = db(); rows = con.execute("SELECT * FROM sound_effects").fetchall(); con.close()
-    return [dict(r) for r in rows]
+    admin = require_admin(x_admin_token)
+    need_perm(admin, "effects")
+    return sb().table("sound_effects").select("*").execute().data
 
 @app.post("/api/effects")
 async def create_effect(x_admin_token: str = Header(default=""), name: str = Form(...),
@@ -331,284 +323,283 @@ async def create_effect(x_admin_token: str = Header(default=""), name: str = For
                        trigger_mode: str = Form("random"), frequency_min: int = Form(30),
                        frequency_max: int = Form(120), probability: int = Form(15),
                        audio: UploadFile = File(None)):
-    admin = require_admin(x_admin_token); need_perm(admin, "effects")
+    admin = require_admin(x_admin_token)
+    need_perm(admin, "effects")
     a_url = ""
     if audio is not None and audio.filename:
-        fn = f"{uuid.uuid4().hex[:10]}-{audio.filename.replace(' ','_')}"
-        (EFFECTS_DIR / fn).write_bytes(await audio.read())
-        a_url = f"/assets/effects/{fn}"
+        a_url = storage_upload("effects", audio.filename, await audio.read())
     eid = f"fx-{uuid.uuid4().hex[:8]}"
-    con = db()
-    con.execute("INSERT INTO sound_effects VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-                (eid, name, icon, category, a_url, trigger_mode, frequency_min, frequency_max,
-                 probability, 1, 0))
-    con.commit(); con.close()
+    sb().table("sound_effects").insert({
+        "effect_id": eid, "name": name, "icon": icon, "category": category,
+        "audio_url": a_url, "trigger_mode": trigger_mode,
+        "frequency_min": frequency_min, "frequency_max": frequency_max,
+        "probability": probability, "enabled": 1, "use_count": 0}).execute()
     return {"effect_id": eid}
 
 @app.put("/api/effects/{eid}")
 def update_effect(eid: str, payload: dict, x_admin_token: str = Header(default="")):
-    admin = require_admin(x_admin_token); need_perm(admin, "effects")
-    allowed = ("name", "icon", "category", "trigger_mode", "frequency_min", "frequency_max",
-               "probability", "enabled", "audio_url")
-    sets = [f"{k}=?" for k in payload if k in allowed]
-    if not sets: raise HTTPException(400, "Nothing to update")
-    con = db()
-    con.execute(f"UPDATE sound_effects SET {','.join(sets)} WHERE effect_id=?",
-                [payload[k] for k in payload if k in allowed] + [eid])
-    con.commit(); con.close()
+    admin = require_admin(x_admin_token)
+    need_perm(admin, "effects")
+    allowed = ("name", "icon", "category", "trigger_mode", "frequency_min",
+               "frequency_max", "probability", "enabled", "audio_url")
+    patch = {k: payload[k] for k in payload if k in allowed}
+    if not patch:
+        raise HTTPException(400, "Nothing to update")
+    sb().table("sound_effects").update(patch).eq("effect_id", eid).execute()
     return {"ok": True}
 
 @app.delete("/api/effects/{eid}")
 def delete_effect(eid: str, x_admin_token: str = Header(default="")):
-    admin = require_admin(x_admin_token); need_perm(admin, "effects")
-    con = db(); con.execute("DELETE FROM sound_effects WHERE effect_id=?", (eid,)); con.commit(); con.close()
+    admin = require_admin(x_admin_token)
+    need_perm(admin, "effects")
+    sb().table("sound_effects").delete().eq("effect_id", eid).execute()
     return {"ok": True}
 
 @app.post("/api/effects/{eid}/use")
 def use_effect(eid: str, payload: dict = None):
-    con = db()
-    con.execute("UPDATE sound_effects SET use_count=use_count+1 WHERE effect_id=?", (eid,))
+    db = sb()
+    rows = db.table("sound_effects").select("use_count").eq("effect_id", eid).execute().data
+    if rows:
+        db.table("sound_effects").update({"use_count": (rows[0]["use_count"] or 0) + 1}).eq("effect_id", eid).execute()
     if payload and payload.get("session_id"):
-        con.execute("UPDATE sessions SET effects_used=effects_used+1 WHERE session_id=?", (payload["session_id"],))
-    con.commit(); con.close()
+        srows = db.table("sessions").select("effects_used").eq("session_id", payload["session_id"]).execute().data
+        if srows:
+            db.table("sessions").update(
+                {"effects_used": (srows[0]["effects_used"] or 0) + 1}).eq("session_id", payload["session_id"]).execute()
     return {"ok": True}
 
 # ---------- themes & settings ----------
 @app.get("/api/themes/active")
 def active_theme():
-    con = db()
-    row = con.execute("SELECT * FROM themes WHERE is_active=1").fetchone()
-    if not row: row = con.execute("SELECT * FROM themes LIMIT 1").fetchone()
-    s = con.execute("SELECT * FROM settings").fetchall(); con.close()
-    t = dict(row) if row else {}
-    t["settings"] = {r["key"]: r["value"] for r in s}
+    db = sb()
+    rows = db.table("themes").select("*").eq("is_active", 1).limit(1).execute().data
+    if not rows:
+        rows = db.table("themes").select("*").limit(1).execute().data
+    t = dict(rows[0]) if rows else {}
+    t["settings"] = {r["key"]: r["value"] for r in db.table("settings").select("*").execute().data}
     return t
 
 @app.get("/api/themes")
 def list_themes():
-    con = db(); rows = con.execute("SELECT * FROM themes").fetchall(); con.close()
-    return [dict(r) for r in rows]
+    return sb().table("themes").select("*").execute().data
 
 @app.post("/api/themes")
 def create_theme(payload: dict, x_admin_token: str = Header(default="")):
-    admin = require_admin(x_admin_token); need_perm(admin, "themes")
+    admin = require_admin(x_admin_token)
+    need_perm(admin, "themes")
     tid = f"theme-{uuid.uuid4().hex[:8]}"
-    con = db()
-    con.execute("""INSERT INTO themes(theme_id,name,primary_color,secondary_color,background,
-      button_style,font_family,animation,player_style,site_name,logo_url,is_active)
-      VALUES(?,?,?,?,?,?,?,?,?,?,?,0)""",
-      (tid, payload.get("name", "Custom"), payload.get("primary_color", "#6C4EFF"),
-       payload.get("secondary_color", "#00E5FF"), payload.get("background", "dark"),
-       payload.get("button_style", "rounded"), payload.get("font_family", "Inter"),
-       payload.get("animation", "neon"), payload.get("player_style", "glass"),
-       payload.get("site_name", "A MUSIC"), payload.get("logo_url", "")))
-    con.commit(); con.close()
+    sb().table("themes").insert({
+        "theme_id": tid, "name": payload.get("name", "Custom"),
+        "primary_color": payload.get("primary_color", "#6C4EFF"),
+        "secondary_color": payload.get("secondary_color", "#00E5FF"),
+        "background": payload.get("background", "dark"),
+        "button_style": payload.get("button_style", "rounded"),
+        "font_family": payload.get("font_family", "Inter"),
+        "animation": payload.get("animation", "neon"),
+        "player_style": payload.get("player_style", "glass"),
+        "site_name": payload.get("site_name", "A Music"),
+        "logo_url": payload.get("logo_url", ""), "is_active": 0}).execute()
     return {"theme_id": tid}
 
 @app.put("/api/themes/{tid}")
 def update_theme(tid: str, payload: dict, x_admin_token: str = Header(default="")):
-    admin = require_admin(x_admin_token); need_perm(admin, "themes")
+    admin = require_admin(x_admin_token)
+    need_perm(admin, "themes")
+    db = sb()
     allowed = ("name", "primary_color", "secondary_color", "background", "button_style",
                "font_family", "animation", "player_style", "site_name", "logo_url")
-    sets = [f"{k}=?" for k in payload if k in allowed]
-    con = db()
-    if sets:
-        con.execute(f"UPDATE themes SET {','.join(sets)} WHERE theme_id=?",
-                    [payload[k] for k in payload if k in allowed] + [tid])
+    patch = {k: payload[k] for k in payload if k in allowed}
+    if patch:
+        db.table("themes").update(patch).eq("theme_id", tid).execute()
     if payload.get("is_active"):
-        con.execute("UPDATE themes SET is_active=0")
-        con.execute("UPDATE themes SET is_active=1 WHERE theme_id=?", (tid,))
+        for r in db.table("themes").select("theme_id").execute().data:
+            db.table("themes").update({"is_active": 0}).eq("theme_id", r["theme_id"]).execute()
+        db.table("themes").update({"is_active": 1}).eq("theme_id", tid).execute()
         if payload.get("site_name"):
-            con.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('site_name',?)",
-                        (payload["site_name"],))
-    con.commit(); con.close()
+            if db.table("settings").select("key").eq("key", "site_name").execute().data:
+                db.table("settings").update({"value": payload["site_name"]}).eq("key", "site_name").execute()
+            else:
+                db.table("settings").insert({"key": "site_name", "value": payload["site_name"]}).execute()
     return {"ok": True}
 
 @app.delete("/api/themes/{tid}")
 def delete_theme(tid: str, x_admin_token: str = Header(default="")):
-    admin = require_admin(x_admin_token); need_perm(admin, "themes")
-    con = db(); con.execute("DELETE FROM themes WHERE theme_id=? AND is_active=0", (tid,))
-    con.commit(); con.close()
+    admin = require_admin(x_admin_token)
+    need_perm(admin, "themes")
+    sb().table("themes").delete().eq("theme_id", tid).eq("is_active", 0).execute()
     return {"ok": True}
 
 @app.get("/api/settings")
 def get_settings():
-    con = db(); rows = con.execute("SELECT * FROM settings").fetchall(); con.close()
-    return {r["key"]: r["value"] for r in rows}
+    return {r["key"]: r["value"] for r in sb().table("settings").select("*").execute().data}
 
 @app.put("/api/settings")
 def put_settings(payload: dict, x_admin_token: str = Header(default="")):
-    admin = require_admin(x_admin_token); need_perm(admin, "settings")
-    con = db()
+    admin = require_admin(x_admin_token)
+    need_perm(admin, "settings")
+    db = sb()
     for k, v in payload.items():
-        con.execute("INSERT OR REPLACE INTO settings(key,value) VALUES(?,?)", (k, str(v)))
-    con.commit(); con.close()
+        if db.table("settings").select("key").eq("key", k).execute().data:
+            db.table("settings").update({"value": str(v)}).eq("key", k).execute()
+        else:
+            db.table("settings").insert({"key": k, "value": str(v)}).execute()
     return {"ok": True}
 
-# ---------- sessions (guest, no login) ----------
+# ---------- sessions (guest, no login) + DB-backed live presence ----------
 @app.post("/api/sessions/join")
 def join(payload: dict):
-    guest = payload.get("guest_id") or f"Guest-{secrets.randbelow(9000)+1000}"
+    guest = payload.get("guest_id") or f"Guest-{secrets.randbelow(9000) + 1000}"
     sid = f"sess-{uuid.uuid4().hex[:10]}"
-    now = datetime.now(timezone.utc).isoformat()
-    con = db()
-    con.execute("INSERT INTO sessions(session_id,guest_id,entry_time,last_activity,theme) VALUES(?,?,?,?,?)",
-                (sid, guest, now, now, payload.get("theme", "")))
-    con.commit(); con.close()
-    LIVE[guest] = {"session_id": sid, "guest_id": guest, "entry": time.time(), "song": "-", "last": time.time()}
+    sb().table("sessions").insert({
+        "session_id": sid, "guest_id": guest, "entry_time": now_iso(),
+        "last_activity": now_iso(), "theme": payload.get("theme", "")}).execute()
     return {"session_id": sid, "guest_id": guest}
 
 @app.post("/api/sessions/heartbeat")
 def heartbeat(payload: dict):
     sid = payload.get("session_id", "")
-    now = datetime.now(timezone.utc).isoformat()
-    con = db()
-    con.execute("""UPDATE sessions SET last_activity=?, current_song=COALESCE(?,current_song),
-      theme=COALESCE(?,theme) WHERE session_id=?""",
-      (now, payload.get("current_song"), payload.get("theme"), sid))
-    con.commit()
-    row = con.execute("SELECT * FROM sessions WHERE session_id=?", (sid,)).fetchone()
-    con.close()
-    if row and row["guest_id"] in LIVE:
-        LIVE[row["guest_id"]].update(last=time.time(), song=payload.get("current_song") or LIVE[row["guest_id"]]["song"])
+    patch = {"last_activity": now_iso()}
+    if payload.get("current_song"):
+        patch["current_song"] = payload["current_song"]
+    if payload.get("theme") is not None:
+        patch["theme"] = payload["theme"]
+    sb().table("sessions").update(patch).eq("session_id", sid).execute()
     return {"ok": True}
 
 @app.post("/api/sessions/leave")
 def leave(payload: dict):
     sid = payload.get("session_id", "")
-    now = datetime.now(timezone.utc)
-    con = db()
-    row = con.execute("SELECT * FROM sessions WHERE session_id=?", (sid,)).fetchone()
-    if row:
-        entry = datetime.fromisoformat(row["entry_time"])
-        dur = int((now - entry).total_seconds())
-        con.execute("UPDATE sessions SET exit_time=?, duration_sec=? WHERE session_id=?",
-                    (now.isoformat(), dur, sid))
-        con.commit()
-        LIVE.pop(row["guest_id"], None)
-    con.close()
+    db = sb()
+    rows = db.table("sessions").select("entry_time").eq("session_id", sid).execute().data
+    if rows and rows[0].get("entry_time"):
+        try:
+            dur = int((datetime.now(timezone.utc) - datetime.fromisoformat(rows[0]["entry_time"])).total_seconds())
+        except Exception:
+            dur = 0
+        db.table("sessions").update({"exit_time": now_iso(), "duration_sec": dur}).eq("session_id", sid).execute()
     return {"ok": True}
 
 @app.get("/api/live")
 def live(x_admin_token: str = Header(default="")):
     require_admin(x_admin_token)
-    now = time.time()
+    cutoff = (datetime.now(timezone.utc) - timedelta(seconds=90)).isoformat()
+    rows = sb().table("sessions").select("*").gte("last_activity", cutoff).execute().data
+    now = datetime.now(timezone.utc)
     out = []
-    for g, v in list(LIVE.items()):
-        if now - v["last"] > 90:  # stale
-            LIVE.pop(g, None); continue
-        out.append({"guest_id": g, "session_id": v["session_id"],
-                    "entered": datetime.fromtimestamp(v["entry"]).strftime("%H:%M:%S"),
-                    "current_song": v["song"], "duration": fmt_dur(int(now - v["entry"]))})
+    for r in rows:
+        if r.get("exit_time"):
+            continue
+        try:
+            entry = datetime.fromisoformat(r["entry_time"])
+            dur = fmt_dur(max(0, int((now - entry).total_seconds())))
+            entered = as_time(r["entry_time"])
+        except Exception:
+            dur, entered = "00:00", "-"
+        out.append({"guest_id": r["guest_id"], "session_id": r["session_id"],
+                    "entered": entered, "current_song": r.get("current_song") or "-",
+                    "duration": dur})
     return {"count": len(out), "users": out}
-
-def fmt_dur(s):
-    return f"{s//60:02d}:{s%60:02d}"
 
 # ---------- analytics ----------
 @app.get("/api/analytics/overview")
 def analytics_overview(x_admin_token: str = Header(default="")):
-    admin = require_admin(x_admin_token); need_perm(admin, "analytics")
-    con = db()
-    today = datetime.now(timezone.utc).date().isoformat()
-    visitors = con.execute("SELECT COUNT(*) n FROM sessions WHERE date(entry_time)=?", (today,)).fetchone()["n"]
-    plays = con.execute("SELECT COALESCE(SUM(play_count),0) s FROM songs").fetchone()["s"]
-    total_time = con.execute("SELECT COALESCE(SUM(duration_sec),0) s FROM sessions").fetchone()["s"]
-    top = con.execute("SELECT title,play_count FROM songs ORDER BY play_count DESC LIMIT 1").fetchone()
-    fx = con.execute("SELECT COALESCE(SUM(use_count),0) s FROM sound_effects").fetchone()["s"]
-    hourly = con.execute("""SELECT strftime('%H',entry_time) h, COUNT(*) n FROM sessions
-      WHERE date(entry_time)=? GROUP BY h ORDER BY h""", (today,)).fetchall()
-    top_songs = con.execute("SELECT title,artist,play_count FROM songs ORDER BY play_count DESC LIMIT 5").fetchall()
-    con.close()
+    admin = require_admin(x_admin_token)
+    need_perm(admin, "analytics")
+    db = sb()
+    today = datetime.now(timezone.utc).date().isoformat() + "T00:00:00+00:00"
+    visitors = db.table("sessions").select("session_id", count="exact").gte("entry_time", today).execute().count or 0
+    plays = sum((r.get("play_count") or 0) for r in db.table("songs").select("play_count").execute().data)
+    total_time = sum((r.get("duration_sec") or 0) for r in db.table("sessions").select("duration_sec").execute().data)
+    top = db.table("songs").select("title,play_count").order("play_count", desc=True).limit(1).execute().data
+    fx = sum((r.get("use_count") or 0) for r in db.table("sound_effects").select("use_count").execute().data)
+    hours = [0] * 24
+    for r in db.table("sessions").select("entry_time").gte("entry_time", today).execute().data:
+        try:
+            hours[datetime.fromisoformat(r["entry_time"]).hour] += 1
+        except Exception:
+            pass
+    hourly = [{"h": f"{h:02d}", "n": n} for h, n in enumerate(hours) if n > 0]
+    top_songs = db.table("songs").select("title,artist,play_count").order("play_count", desc=True).limit(5).execute().data
     return {"visitors_today": visitors, "songs_played": plays, "total_time_sec": total_time,
-            "popular_song": dict(top) if top else {}, "effects_used": fx,
-            "hourly": [dict(r) for r in hourly],
-            "top_songs": [dict(r) for r in top_songs]}
+            "popular_song": top[0] if top else {}, "effects_used": fx,
+            "hourly": hourly, "top_songs": top_songs}
 
 @app.get("/api/analytics/songs/{sid}")
 def song_analytics(sid: str, x_admin_token: str = Header(default="")):
-    admin = require_admin(x_admin_token); need_perm(admin, "analytics")
-    con = db()
-    song = con.execute("SELECT * FROM songs WHERE song_id=?", (sid,)).fetchone()
-    uniq = con.execute("SELECT COUNT(DISTINCT session_id) n FROM play_history WHERE song_id=?", (sid,)).fetchone()["n"]
-    avg = con.execute("SELECT COALESCE(AVG(duration_sec),0) a FROM play_history WHERE song_id=?", (sid,)).fetchone()["a"]
-    comp = con.execute("SELECT COUNT(*) n FROM play_history WHERE song_id=? AND completed=1", (sid,)).fetchone()["n"]
-    skip = con.execute("SELECT COUNT(*) n FROM play_history WHERE song_id=? AND skipped=1", (sid,)).fetchone()["n"]
-    con.close()
-    if not song: raise HTTPException(404, "Song not found")
-    return {"song": dict(song), "unique_sessions": uniq, "avg_listen_sec": int(avg or 0),
+    admin = require_admin(x_admin_token)
+    need_perm(admin, "analytics")
+    db = sb()
+    song = db.table("songs").select("*").eq("song_id", sid).execute().data
+    if not song:
+        raise HTTPException(404, "Song not found")
+    hist = db.table("play_history").select("*").eq("song_id", sid).execute().data
+    uniq = len({h["session_id"] for h in hist if h.get("session_id")})
+    avg = int(sum(h.get("duration_sec") or 0 for h in hist) / len(hist)) if hist else 0
+    comp = sum(1 for h in hist if h.get("completed"))
+    skip = sum(1 for h in hist if h.get("skipped"))
+    return {"song": song[0], "unique_sessions": uniq, "avg_listen_sec": avg,
             "completions": comp, "skips": skip}
 
-# ---------- AI-ish recommendations (no account, session-based) ----------
+# ---------- session-based recommendations (no account) ----------
 @app.get("/api/recommend")
 def recommend(session_id: str = ""):
-    con = db()
+    db = sb()
+    cats, played = [], []
     if session_id:
-        rows = con.execute("""SELECT s.category, COUNT(*) n FROM play_history h
-          JOIN songs s ON s.song_id=h.song_id WHERE h.session_id=? GROUP BY s.category
-          ORDER BY n DESC LIMIT 2""", (session_id,)).fetchall()
-        cats = [r["category"] for r in rows]
-        played = [r["song_id"] for r in con.execute(
-            "SELECT song_id FROM play_history WHERE session_id=?", (session_id,)).fetchall()]
-    else:
-        cats, played = [], []
+        hist = db.table("play_history").select("song_id").eq("session_id", session_id).execute().data
+        played = [h["song_id"] for h in hist if h.get("song_id")]
+        if played:
+            cat_count: dict = {}
+            for s in db.table("songs").select("song_id,category").execute().data:
+                if s["song_id"] in played and s.get("category"):
+                    cat_count[s["category"]] = cat_count.get(s["category"], 0) + 1
+            cats = sorted(cat_count, key=cat_count.get, reverse=True)[:2]
     if cats:
-        ph = ",".join("?" * len(cats))
-        recs = con.execute(f"""SELECT * FROM songs WHERE enabled=1 AND category IN ({ph})
-          ORDER BY play_count DESC LIMIT 6""", cats).fetchall()
-        recs = [dict(r) for r in recs if r["song_id"] not in played][:3]
+        recs = db.table("songs").select("*").eq("enabled", 1).in_("category", cats).order(
+            "play_count", desc=True).limit(6).execute().data
+        recs = [r for r in recs if r["song_id"] not in played][:3]
     else:
-        recs = [dict(r) for r in con.execute(
-            "SELECT * FROM songs WHERE enabled=1 ORDER BY play_count DESC LIMIT 3").fetchall()]
-    con.close()
+        recs = db.table("songs").select("*").eq("enabled", 1).order("play_count", desc=True).limit(3).execute().data
     note = f"You seem to prefer {', '.join(cats)}. " if cats else "Trending picks for new listeners. "
     return {"picks": recs, "note": note + "No account needed — based only on this session."}
 
-# ---------- live websocket for admin dashboard ----------
-LIVE: dict = {}
-ADMIN_WS: set = set()
-
-@app.websocket("/ws/live")
-async def ws_live(ws: WebSocket):
-    await ws.accept()
-    ADMIN_WS.add(ws)
-    try:
-        while True:
-            now = time.time()
-            users = [{"guest_id": g, "song": v["song"],
-                      "duration": fmt_dur(int(now - v["entry"]))}
-                     for g, v in list(LIVE.items()) if now - v["last"] <= 90]
-            await ws.send_json({"type": "live", "count": len(users), "users": users, "ts": int(now)})
-            import asyncio
-            await asyncio.sleep(3)
-    except WebSocketDisconnect:
-        ADMIN_WS.discard(ws)
-
-# ---------- static frontend ----------
-app.mount("/assets", StaticFiles(directory=str(BASE / "assets")), name="assets")
-app.mount("/css", StaticFiles(directory=str(BASE / "css")), name="css")
-app.mount("/js", StaticFiles(directory=str(BASE / "js")), name="js")
+# ---------- local static frontend (Vercel serves these itself; local uvicorn needs them) ----------
+for _mp, _dd in (("/assets", "assets"), ("/css", "css"), ("/js", "js")):
+    _dir = BASE / _dd
+    if _dir.exists():
+        app.mount(_mp, StaticFiles(directory=str(_dir)), name=_dd)
 
 @app.get("/admin/{path:path}")
 def admin_pages(path: str):
     f = BASE / "admin" / (path or "login.html")
-    if path == "" or path.endswith("/"): f = BASE / "admin" / "dashboard.html"
-    if f.suffix == "": f = f.with_suffix(".html")
-    if f.exists() and f.is_file(): return FileResponse(str(f))
+    if path == "" or path.endswith("/"):
+        f = BASE / "admin" / "dashboard.html"
+    if f.suffix == "":
+        f = f.with_suffix(".html")
+    if f.exists() and f.is_file():
+        return FileResponse(str(f))
     return FileResponse(str(BASE / "admin" / "login.html"))
+
+@app.get("/health")
+async def health_check():
+    return {"status": "healthy", "version": "2.0.0-supabase"}
 
 @app.get("/{path:path}")
 def pages(path: str):
-    if path.startswith("api/"): raise HTTPException(404, "Not found")
+    if path.startswith("api/"):
+        raise HTTPException(404, "Not found")
     f = BASE / f"{path or 'index.html'}"
-    if path == "": f = BASE / "index.html"
-    if f.exists() and f.is_file(): return FileResponse(str(f))
+    if path == "":
+        f = BASE / "index.html"
+    if f.exists() and f.is_file():
+        return FileResponse(str(f))
     idx = BASE / "index.html"
-    if idx.exists(): return FileResponse(str(idx))
-    return JSONResponse({"message": "A Music API — frontend not built yet"})
+    if idx.exists():
+        return FileResponse(str(idx))
+    return JSONResponse({"message": "A Music API — frontend served by Vercel"})
 
 if __name__ == "__main__":
     import uvicorn
-    print("\n  A MUSIC -> http://localhost:8000")
-    print("  First run? POST /api/admin/setup to create the Super Admin\n")
+    print("\n  A Music -> http://localhost:8000  (Supabase-powered)")
+    print("  Needs SUPABASE_URL + SUPABASE_SERVICE_KEY env vars\n")
     uvicorn.run(app, host="0.0.0.0", port=8000)

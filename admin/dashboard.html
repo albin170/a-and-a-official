@@ -156,9 +156,7 @@ async function loadLive(){
     $("#liveRows").innerHTML=o.users.map(u=>`<tr><td><b>${u.guest_id}</b></td><td>${u.entered}</td><td>${u.current_song||"-"}</td><td>${u.duration}</td></tr>`).join("")||"<tr><td colspan=4>No one online right now</td></tr>";
   }catch{}
 }
-// realtime websocket
-(function(){try{const ws=new WebSocket((location.protocol==="https:"?"wss://":"ws://")+location.host+"/ws/live");
-ws.onmessage=e=>{const m=JSON.parse(e.data);window.__live=m.count;$("#liveCount").textContent=m.count;$("#liveBadge").innerHTML=`<span class="live-dot"></span> LIVE: ${m.count}`;
-if(!$("#t-live").classList.contains("hidden"))$("#liveRows").innerHTML=m.users.map(u=>`<tr><td><b>${u.guest_id}</b></td><td>-</td><td>${u.song||"-"}</td><td>${u.duration}</td></tr>`).join("")||"<tr><td colspan=4>No one online</td></tr>";};}catch{}})();
+// live users: REST polling (works on serverless where WebSockets can't)
+setInterval(()=>{ loadLive(); if(!$("#t-dash").classList.contains("hidden"))refresh("dash"); }, 5000);
 refresh();
 </script></body></html>
