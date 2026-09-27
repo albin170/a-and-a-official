@@ -29,6 +29,12 @@ app = FastAPI(title="A Music", version="2.0.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True,
                    allow_methods=["*"], allow_headers=["*"])
 
+
+@app.exception_handler(Exception)
+async def debug_errors(request, exc):
+    # Surfaces the real failure reason on Vercel instead of a bare 500.
+    return JSONResponse(status_code=500, content={"detail": f"{type(exc).__name__}: {exc}"})
+
 # ---------- helpers ----------
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -582,7 +588,11 @@ def admin_pages(path: str):
 
 @app.get("/health")
 async def health_check():
-    return {"status": "healthy", "version": "2.0.0-supabase"}
+    return {"status": "healthy", "version": "2.0.0-supabase",
+            "env": {
+                "SUPABASE_URL_set": bool(os.environ.get("SUPABASE_URL")),
+                "SUPABASE_SERVICE_KEY_set": bool(os.environ.get("SUPABASE_SERVICE_KEY")),
+            }}
 
 @app.get("/{path:path}")
 def pages(path: str):
